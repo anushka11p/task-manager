@@ -5,64 +5,111 @@ const PRIORITIES = ["Low", "Medium", "High"];
 const STATUS_FILTERS = ["All", "Active", "Completed"];
 const PRIORITY_FILTERS = ["All", "High", "Medium", "Low"];
 
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2);
-}
+// Base URL of the Flask API. Port 5001, not 5000 — macOS's AirPlay
+// Receiver squats on 5000 by default and can silently intercept requests.
+// Change this if the backend runs on a different host/port (e.g. deployed).
+const API_BASE = "http://localhost:5001/api/tasks";
 
 function formatDate(isoString) {
-  return new Date(isoString).toLocaleDateString("en-IN", {
+  // SQLite's CURRENT_TIMESTAMP returns "YYYY-MM-DD HH:MM:SS" (UTC, no "Z"),
+  // which Safari/older engines can fail to parse. Normalizing to ISO-8601
+  // first makes the date parse reliably everywhere.
+  const normalized = isoString.includes("T") ? isoString : isoString.replace(" ", "T") + "Z";
+  return new Date(normalized).toLocaleDateString("en-IN", {
     day: "numeric", month: "short", year: "numeric",
   });
 }
 
 export default function App() {
-  const [tasks, setTasks] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem("tasks")) || [];
-    } catch {
-      return [];
-    }
-  });
+  const [tasks, setTasks] = useState([]);
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("Medium");
   const [statusFilter, setStatusFilter] = useState("All");
   const [priorityFilter, setPriorityFilter] = useState("All");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
+  // ---- Load all tasks from the backend on first render ----
   useEffect(() => {
-    localStorage.setItem("tasks", JSON.stringify(tasks));
-  }, [tasks]);
+    fetchTasks();
+  }, []);
 
-  function addTask() {
+  async function fetchTasks() {
+    try {
+      setLoading(true);
+      const res = await fetch(API_BASE);
+      if (!res.ok) throw new Error(`GET /api/tasks failed (${res.status})`);
+      const data = await res.json();
+      setTasks(data);
+      setError("");
+    } catch (err) {
+      setError("Could not reach the server. Is the Flask backend running on port 5000?");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---- Create ----
+  async function addTask() {
     const trimmed = title.trim();
     if (!trimmed) {
       setError("Task title can't be empty.");
       return;
     }
-    setError("");
-    setTasks((prev) => [
-      {
-        id: generateId(),
-        title: trimmed,
-        priority,
-        completed: false,
-        createdAt: new Date().toISOString(),
-      },
-      ...prev,
-    ]);
-    setTitle("");
-    setPriority("Medium");
+    try {
+      const res = await fetch(API_BASE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed, priority }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `POST /api/tasks failed (${res.status})`);
+      }
+      const newTask = await res.json();
+      setTasks((prev) => [newTask, ...prev]);
+      setTitle("");
+      setPriority("Medium");
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  function toggleComplete(id) {
+  // ---- Update (toggle complete) ----
+  async function toggleComplete(task) {
+    // Optimistic update so the UI feels instant; rolled back on failure.
+    const previous = tasks;
     setTasks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
+      prev.map((t) => (t.id === task.id ? { ...t, completed: !t.completed } : t))
     );
+    try {
+      const res = await fetch(`${API_BASE}/${task.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ completed: !task.completed }),
+      });
+      if (!res.ok) throw new Error(`PUT /api/tasks/${task.id} failed (${res.status})`);
+      const updated = await res.json();
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+    } catch (err) {
+      setTasks(previous); // rollback
+      setError(err.message);
+    }
   }
 
-  function deleteTask(id, title) {
-    if (window.confirm(`Delete "${title}"?`)) {
-      setTasks((prev) => prev.filter((t) => t.id !== id));
+  // ---- Delete ----
+  async function deleteTask(id, taskTitle) {
+    if (!window.confirm(`Delete "${taskTitle}"?`)) return;
+    const previous = tasks;
+    setTasks((prev) => prev.filter((t) => t.id !== id)); // optimistic
+    try {
+      const res = await fetch(`${API_BASE}/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`DELETE /api/tasks/${id} failed (${res.status})`);
+    } catch (err) {
+      setTasks(previous); // rollback
+      setError(err.message);
     }
   }
 
@@ -153,7 +200,11 @@ export default function App() {
         </section>
 
         <section className="task-list-section">
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div className="empty-state">
+              <p className="empty-title">Loading tasks…</p>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="empty-state">
               <span className="empty-icon">📋</span>
               <p className="empty-title">
@@ -174,7 +225,7 @@ export default function App() {
                 >
                   <button
                     className={`check-btn ${task.completed ? "check-btn--checked" : ""}`}
-                    onClick={() => toggleComplete(task.id)}
+                    onClick={() => toggleComplete(task)}
                     aria-label={task.completed ? "Mark as active" : "Mark as complete"}
                   >
                     {task.completed && <span>✓</span>}
@@ -186,7 +237,7 @@ export default function App() {
                       <span className={`badge badge--${task.priority.toLowerCase()}`}>
                         {task.priority}
                       </span>
-                      <span className="task-date">{formatDate(task.createdAt)}</span>
+                      <span className="task-date">{formatDate(task.created_at)}</span>
                       <span className={`task-status ${task.completed ? "task-status--done" : "task-status--active"}`}>
                         {task.completed ? "Completed" : "Active"}
                       </span>
