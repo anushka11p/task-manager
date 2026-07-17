@@ -6,12 +6,90 @@ const STATUS_FILTERS = ["All", "Active", "Completed"];
 const PRIORITY_FILTERS = ["All", "High", "Medium", "Low"];
 
 const API_BASE = "http://localhost:5001/api";
+const SPECIAL_CHARS = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/;
 
 function formatDate(isoString) {
   const normalized = isoString.includes("T") ? isoString : isoString.replace(" ", "T") + "Z";
   return new Date(normalized).toLocaleDateString("en-IN", {
     day: "numeric", month: "short", year: "numeric",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Password strength -- mirrors the backend's password_policy_error exactly,
+// so what the UI allows is what the server will actually accept. This is
+// UX only, though: the server re-checks independently and is the real gate,
+// since anyone can bypass client-side JS entirely.
+// ---------------------------------------------------------------------------
+
+function evaluatePassword(password) {
+  const checks = {
+    length: password.length >= 8,
+    uppercase: /[A-Z]/.test(password),
+    lowercase: /[a-z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: SPECIAL_CHARS.test(password),
+  };
+  const passedCount = Object.values(checks).filter(Boolean).length;
+  const isStrong = Object.values(checks).every(Boolean);
+  const isMedium = !isStrong && checks.length && passedCount >= 3;
+  const level = isStrong ? "strong" : isMedium ? "medium" : "weak";
+  return { checks, level, isStrong };
+}
+
+function PasswordStrengthMeter({ password }) {
+  if (!password) return null;
+  const { checks, level } = evaluatePassword(password);
+  const filledBars = level === "weak" ? 1 : level === "medium" ? 2 : 3;
+
+  const requirements = [
+    ["length", "8+ characters"],
+    ["uppercase", "1 uppercase letter"],
+    ["lowercase", "1 lowercase letter"],
+    ["number", "1 number"],
+    ["special", "1 special character"],
+  ];
+
+  return (
+    <div className="pw-strength">
+      <div className="pw-strength-bars">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className={`pw-strength-bar ${i < filledBars ? `pw-strength-bar--filled-${level}` : ""}`}
+          />
+        ))}
+      </div>
+      <span className={`pw-strength-label pw-strength-label--${level}`}>
+        {level === "strong" ? "Strong password" : level === "medium" ? "Medium strength" : "Weak password"}
+      </span>
+      <ul className="pw-requirements">
+        {requirements.map(([key, label]) => (
+          <li key={key} className={checks[key] ? "pw-req--met" : ""}>
+            <span className="pw-req-icon">{checks[key] ? "✓" : "○"}</span>{label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Theme toggle -- explicit, user-controlled, persisted. Rendered on every
+// screen (auth and task app both) via the root App component below.
+// ---------------------------------------------------------------------------
+
+function ThemeToggle({ theme, onToggle }) {
+  return (
+    <button
+      className="theme-toggle"
+      onClick={onToggle}
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+    >
+      {theme === "dark" ? "☀️" : "🌙"}
+    </button>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -25,10 +103,18 @@ function AuthForm({ mode, onSuccess, onSwitchMode }) {
   const [submitting, setSubmitting] = useState(false);
 
   const isRegister = mode === "register";
+  const strength = evaluatePassword(password);
+  // Gate registration client-side too, purely for UX (instant feedback,
+  // no wasted round trip) -- the server enforces the same rule regardless.
+  const canSubmit = !isRegister || strength.isStrong;
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+    if (isRegister && !strength.isStrong) {
+      setError("Please choose a strong password before registering.");
+      return;
+    }
     setSubmitting(true);
     try {
       const endpoint = isRegister ? "register" : "login";
@@ -41,9 +127,6 @@ function AuthForm({ mode, onSuccess, onSwitchMode }) {
       if (!res.ok) throw new Error(body.error || `${endpoint} failed (${res.status})`);
 
       if (isRegister) {
-        // Registration succeeded but doesn't return a session token by
-        // design (register and login are separate concerns) -- log them
-        // in immediately behind the scenes so it feels like one step.
         const loginRes = await fetch(`${API_BASE}/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -95,9 +178,11 @@ function AuthForm({ mode, onSuccess, onSwitchMode }) {
           />
         </label>
 
+        {isRegister && <PasswordStrengthMeter password={password} />}
+
         {error && <p className="error-msg" role="alert">{error}</p>}
 
-        <button className="add-btn auth-submit" type="submit" disabled={submitting}>
+        <button className="add-btn auth-submit" type="submit" disabled={submitting || !canSubmit}>
           {submitting ? "Please wait…" : isRegister ? "Register" : "Log in"}
         </button>
 
@@ -135,12 +220,9 @@ function TaskApp({ token, username, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Any task call can come back 401 if the token expired or was revoked
-  // (e.g. logged out in another tab). Centralize that handling so every
-  // call site doesn't need to repeat it.
   async function handleAuthedResponse(res) {
     if (res.status === 401) {
-      onLogout(); // force back to login; the stored token is no longer valid
+      onLogout();
       throw new Error("Session expired. Please log in again.");
     }
     return res;
@@ -330,16 +412,25 @@ function TaskApp({ token, username, onLogout }) {
 }
 
 // ---------------------------------------------------------------------------
-// Root component: decides auth screen vs. task app, owns the token
+// Root component
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  // Session persists across refresh because the token is read from
-  // localStorage on first render. Only the token/username live here --
-  // task data itself is never cached client-side, only fetched live.
   const [token, setToken] = useState(() => localStorage.getItem("taskflow_token"));
   const [username, setUsername] = useState(() => localStorage.getItem("taskflow_username"));
   const [authMode, setAuthMode] = useState("login");
+  const [theme, setTheme] = useState(() => localStorage.getItem("taskflow_theme") || "light");
+
+  // Applied to <html>, not <body> -- keeps it above everything, including
+  // the fixed-position theme toggle button itself, with no cascade surprises.
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("taskflow_theme", theme);
+  }, [theme]);
+
+  function toggleTheme() {
+    setTheme((t) => (t === "light" ? "dark" : "light"));
+  }
 
   function handleAuthSuccess(newToken, newUsername) {
     localStorage.setItem("taskflow_token", newToken);
@@ -349,17 +440,14 @@ export default function App() {
   }
 
   async function handleLogout() {
-    // Best-effort: tell the server to invalidate the session row. Even if
-    // this fails (server down, network drop), we still clear local state --
-    // the user's intent to log out locally should never be blocked by a
-    // network call.
     try {
       await fetch(`${API_BASE}/logout`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
     } catch {
-      // ignored deliberately -- see comment above
+      // Best-effort server-side invalidation -- local logout must still
+      // succeed even if the network call fails.
     }
     localStorage.removeItem("taskflow_token");
     localStorage.removeItem("taskflow_username");
@@ -368,15 +456,18 @@ export default function App() {
     setAuthMode("login");
   }
 
-  if (!token) {
-    return (
-      <AuthForm
-        mode={authMode}
-        onSuccess={handleAuthSuccess}
-        onSwitchMode={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}
-      />
-    );
-  }
-
-  return <TaskApp token={token} username={username} onLogout={handleLogout} />;
+  return (
+    <>
+      <ThemeToggle theme={theme} onToggle={toggleTheme} />
+      {!token ? (
+        <AuthForm
+          mode={authMode}
+          onSuccess={handleAuthSuccess}
+          onSwitchMode={() => setAuthMode((m) => (m === "login" ? "register" : "login"))}
+        />
+      ) : (
+        <TaskApp token={token} username={username} onLogout={handleLogout} />
+      )}
+    </>
+  );
 }

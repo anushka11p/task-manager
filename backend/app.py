@@ -23,6 +23,7 @@ Run:
 """
 
 import os
+import re
 import secrets
 import sqlite3
 from functools import wraps
@@ -34,7 +35,13 @@ from werkzeug.security import check_password_hash, generate_password_hash
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks.db")
 VALID_PRIORITIES = {"Low", "Medium", "High"}
 MIN_USERNAME_LEN = 3
-MIN_PASSWORD_LEN = 6
+MIN_PASSWORD_LEN = 8
+# A plain (non-raw) string, deliberately: each character here is exactly
+# the character it looks like, including the one literal backslash and one
+# literal double-quote via normal Python escaping. re.escape() below does
+# all the regex-metacharacter escaping needed when this is compiled into a
+# character class -- no manual backslash-escaping should be added here.
+SPECIAL_CHARS = "!@#$%^&*()_+-=[]{};':\"\\|,.<>/?"
 
 app = Flask(__name__)
 CORS(app, expose_headers=["Content-Type", "Authorization"])
@@ -130,6 +137,27 @@ def row_to_task(row):
     }
 
 
+def password_policy_error(password):
+    """
+    Returns an error message string if the password fails the strength
+    policy, or None if it passes. Mirrors the client-side checklist exactly
+    so the two never disagree -- but this is the check that actually
+    matters, since the frontend one can be bypassed entirely (devtools,
+    curl, Postman) and this cannot.
+    """
+    if len(password) < MIN_PASSWORD_LEN:
+        return f"password must be at least {MIN_PASSWORD_LEN} characters"
+    if not re.search(r"[A-Z]", password):
+        return "password must contain at least one uppercase letter"
+    if not re.search(r"[a-z]", password):
+        return "password must contain at least one lowercase letter"
+    if not re.search(r"[0-9]", password):
+        return "password must contain at least one number"
+    if not re.search(f"[{re.escape(SPECIAL_CHARS)}]", password):
+        return "password must contain at least one special character"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
@@ -174,8 +202,10 @@ def register():
 
     if len(username) < MIN_USERNAME_LEN:
         return jsonify({"error": f"username must be at least {MIN_USERNAME_LEN} characters"}), 400
-    if len(password) < MIN_PASSWORD_LEN:
-        return jsonify({"error": f"password must be at least {MIN_PASSWORD_LEN} characters"}), 400
+
+    policy_error = password_policy_error(password)
+    if policy_error is not None:
+        return jsonify({"error": policy_error}), 400
 
     db = get_db()
     existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
