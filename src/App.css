@@ -254,3 +254,50 @@ body {
   .delete-btn { opacity: 1; }
   .header-sub { display: none; }
 }
+/* ---- Auth screens (login / register) ---- */
+.auth-page {
+  min-height: 100vh;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1.5rem;
+  background: var(--bg, #f7f7f8);
+}
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 2rem 1.75rem;
+  display: flex; flex-direction: column; gap: 1rem;
+}
+.auth-logo { justify-content: center; margin-bottom: 0.25rem; }
+.auth-title { font-size: 18px; font-weight: 600; text-align: center; margin-bottom: 0.25rem; }
+.auth-label {
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: 13px; font-weight: 500; color: var(--text-muted);
+}
+.auth-label .task-input { width: 100%; box-sizing: border-box; }
+.auth-submit { width: 100%; justify-content: center; margin-top: 0.25rem; }
+.auth-switch { text-align: center; font-size: 13px; color: var(--text-muted); margin-top: 0.5rem; }
+.auth-switch-btn {
+  background: none; border: none; padding: 0;
+  color: var(--accent, #6d5efc); font-weight: 600; cursor: pointer;
+  font-size: 13px; text-decoration: underline;
+}
+
+/* ---- Header additions: username + logout ---- */
+.header-right { display: flex; align-items: center; gap: 1rem; }
+.header-user { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.logout-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius, 8px);
+  padding: 6px 12px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: all 0.15s;
+}
+.logout-btn:hover { background: var(--high-bg); color: var(--high); border-color: var(--high); }
+
+@media (max-width: 540px) {
+  .header-user { display: none; }
+}
